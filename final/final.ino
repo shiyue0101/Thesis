@@ -14,8 +14,10 @@ struct UploadResponse {
 };
 
 // Network connection settings (SSID & Password)
-const char *ssid = "YOUR_SSID"; // Replace
-const char *password = "YOUR_PASSWORD"; // Replace
+// const char *ssid = "SleepyBear";
+// const char *password = "Jennyshi0101";
+const char *ssid = "Xiaomi_2FAD";
+const char *password = "65141212";
 // EDUROAM network connection settings
 // #define EAP_ANONYMOUS_IDENTITY "mfc903@ku.dk" //anonymous@example.com, or you can use also nickname@example.com
 // #define EAP_IDENTITY "mfc903@ku.dk" //nickname@example.com, at some organizations should work nickname only without realm, but it is not recommended
@@ -37,17 +39,17 @@ String serverTimestampURL = "http://" + serverHost + portRead + "/audio/latest_t
 String serverAudioURL = "http://" + serverHost + portRead + "/audio/latest.wav";
 
 // Discord tokens
-const char *bot_token = "YOUR_BOT_TOKEN";  // Replace
-const char *channel_id = "YOUR_CHANNEL_ID";  // Replace
-const char *webhook_url = "YOUR_WEBHOOK_URL";  // Discord Webhook URL // Replace
+const char *bot_token = "MTMzOTA1MTcxNzc1MjI2MjczNw.G9wDl1.LwnSu5dX482dgyZvNJqifL7mEsCINdIHUdoh3I";
+const char *channel_id = "1338951554039812206";
+const char *webhook_url = "https://discord.com/api/webhooks/1338951722256568372/sHs3NwRxrbF_10eaTslUG2uV9DcErBcMAIwWj_EEajd-JOLixKxQ1KxJCLCjY0tUmePh";  // Discord Webhook URL
 
 // Pressure sensor settings
 #define PRESSURE_PIN 34  // force sensor interface
 bool isHere = false;
-unsigned long isHereStartTime = 0;  // 记录检测到 weightKg > 3 && !isHere 的时间
-unsigned long isLeavingStartTime = 0; // 记录宠物离开的时间
-unsigned long isHereDurationStart = 0;  // 记录宠物在这里停留的开始时间
-const unsigned long PET_STAY_DURATION = 180000; // 3 分钟 (180000 毫秒)，TODO: Test
+unsigned long isHereStartTime = 0;               // 记录检测到 weightKg > 3 && !isHere 的时间
+unsigned long isLeavingStartTime = 0;            // 记录宠物离开的时间
+unsigned long isHereDurationStart = 0;           // 记录宠物在这里停留的开始时间
+const unsigned long PET_STAY_DURATION = 180000;  // 3 分钟 (180000 毫秒)，TODO: Test
 
 // INMP441 microphone settings
 #define SAMPLE_RATE 16000
@@ -72,7 +74,7 @@ int16_t audio_buffer[BUFFER_SIZE];  // Record PCM
 // Variables for comparison
 String lastRegisteredIP = "";     // Stores last registered IP
 unsigned long lastTimestamp = 0;  // Stores last played timestamp
-bool firstRun = true;  // 标志位，ESP32 启动后第一次检测
+bool firstRun = true;             // 标志位，ESP32 启动后第一次检测
 
 // Max retries
 #define MAX_RETRY_IP_REGISTER 5
@@ -86,15 +88,15 @@ std::queue<String> petTaskQueue;        // 存储待执行的任务
 TaskHandle_t petTalkTaskHandle = NULL;  // 任务句柄
 
 // Daily Report
-int dailyVisitCount = 0;           // 记录 "I am here!" 的次数
-unsigned long dailyStayDuration = 0; // 记录 isHere == true 且 weightKg > 3 的总时长（毫秒）
-int dailyTalkCount = 0;            // 记录语音交互次数
-unsigned long lastDailyReportTime = 0; // 记录上次发送每日总结的时间
-#define DAILY_REPORT_HOUR 6    // 设定每天几点发送总结（24小时制）
-#define DAILY_REPORT_MINUTE 18  // 设定每天几分发送总结
-bool dailyReportSent = false; // 标记当天是否已发送每日总结
+int dailyVisitCount = 0;                // 记录 "I am here!" 的次数
+unsigned long dailyStayDuration = 0;    // 记录 isHere == true 且 weightKg > 3 的总时长（毫秒）
+int dailyTalkCount = 0;                 // 记录语音交互次数
+unsigned long lastDailyReportTime = 0;  // 记录上次发送每日总结的时间
+#define DAILY_REPORT_HOUR 0             // 设定每天几点发送总结（24小时制）
+#define DAILY_REPORT_MINUTE 0           // 设定每天几分发送总结
+bool dailyReportSent = false;           // 标记当天是否已发送每日总结
 // time
-const char* ntpServer = "pool.ntp.org";  // NTP 时间服务器
+const char *ntpServer = "pool.ntp.org";  // NTP 时间服务器
 const long gmtOffset_sec = 3600;         // 你的时区（欧洲哥本哈根 GMT+1）
 const int daylightOffset_sec = 3600;     // 夏令时调整（如果有）
 
@@ -203,6 +205,23 @@ void ensureWiFiConnected() {
 
 
 // List all files in SPIFFS
+// void listSPIFFSFiles() {
+//   Serial.println("=== List of files in SPIFFS ===");
+
+//   File root = SPIFFS.open("/");
+//   File file = root.openNextFile();
+
+//   if (!file) {
+//     Serial.println("SPIFFS is empty or inaccessible!");
+//     return;
+//   }
+
+//   while (file) {
+//     Serial.printf("File: %s, Size: %d bytes\n", file.name(), file.size());
+//     file = root.openNextFile();
+//   }
+//   Serial.println("===============================");
+// }
 void listSPIFFSFiles() {
   Serial.println("=== List of files in SPIFFS ===");
 
@@ -216,8 +235,30 @@ void listSPIFFSFiles() {
 
   while (file) {
     Serial.printf("File: %s, Size: %d bytes\n", file.name(), file.size());
+
+    // 如果是 .wav 文件，读取 WAV 头信息
+    String filename = file.name();
+    if (filename.endsWith(".wav")) {
+      uint8_t header[44];
+      file.seek(0);
+      size_t readBytes = file.read(header, 44);
+      if (readBytes >= 44) {
+        // 提取通道数
+        uint16_t channels = header[22] | (header[23] << 8);
+        // 提取采样率
+        uint32_t sampleRate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
+        // 提取位深度
+        uint16_t bitsPerSample = header[34] | (header[35] << 8);
+
+        Serial.printf("  WAV Format: %u-bit, %u Hz, %u channel(s)\n", bitsPerSample, sampleRate, channels);
+      } else {
+        Serial.println("  Failed to read WAV header.");
+      }
+    }
+
     file = root.openNextFile();
   }
+
   Serial.println("===============================");
 }
 
@@ -666,51 +707,51 @@ void petTalkToOwner() {
 // TaskHandle_t petTalkTaskHandle = NULL;  // 任务句柄
 
 void petTalkTask(void *pvParameters) {
-    // Serial.println("Task started: petTalkTask");
+  // Serial.println("Task started: petTalkTask");
 
-    petTalkToOwner();  // 运行 petTalkToOwner 发送语音消息
+  petTalkToOwner();  // 运行 petTalkToOwner 发送语音消息
 
-    // Serial.println("------- Task completed. Checking for next task...");
+  // Serial.println("------- Task completed. Checking for next task...");
 
-    // **先检查队列是否有下一个任务**
-    if (!petTaskQueue.empty()) {
-        // Serial.printf("Queue size before pop: %d\n", petTaskQueue.size());
+  // **先检查队列是否有下一个任务**
+  if (!petTaskQueue.empty()) {
+    // Serial.printf("Queue size before pop: %d\n", petTaskQueue.size());
 
-        String nextTask = petTaskQueue.front();  // 取出队列中的任务
-        petTaskQueue.pop();  // **弹出任务**
-        // Serial.printf("Starting next task from queue: %s\n", nextTask.c_str());
+    String nextTask = petTaskQueue.front();  // 取出队列中的任务
+    petTaskQueue.pop();                      // **弹出任务**
+    // Serial.printf("Starting next task from queue: %s\n", nextTask.c_str());
 
-        // **在清除任务句柄之前启动新任务**
-        xTaskCreatePinnedToCore(
-            petTalkTask, "PetTalkTask", 8192, NULL, 1, &petTalkTaskHandle, 1);
+    // **在清除任务句柄之前启动新任务**
+    xTaskCreatePinnedToCore(
+      petTalkTask, "PetTalkTask", 8192, NULL, 1, &petTalkTaskHandle, 1);
 
-    } else {
-        // Serial.println("No more queued tasks.");
-        petTalkTaskHandle = NULL;  // **只有队列为空时才清除任务句柄**
-    }
+  } else {
+    // Serial.println("No more queued tasks.");
+    petTalkTaskHandle = NULL;  // **只有队列为空时才清除任务句柄**
+  }
 
-    vTaskDelete(NULL);  // **最后删除任务**
+  vTaskDelete(NULL);  // **最后删除任务**
 }
 
 
 // 创建任务
 void startPetTalkTask() {
-    if (petTalkTaskHandle == NULL) {
-        // Serial.println("------- No active task. Starting new petTalkTask...");
+  if (petTalkTaskHandle == NULL) {
+    // Serial.println("------- No active task. Starting new petTalkTask...");
 
-        BaseType_t result = xTaskCreatePinnedToCore(
-            petTalkTask, "PetTalkTask", 8192, NULL, 1, &petTalkTaskHandle, 1);
+    BaseType_t result = xTaskCreatePinnedToCore(
+      petTalkTask, "PetTalkTask", 8192, NULL, 1, &petTalkTaskHandle, 1);
 
-        if (result == pdPASS) {
-            // Serial.println("Task created successfully");
-        } else {
-            // Serial.println("Task creation failed!");
-            petTalkTaskHandle = NULL;
-        }
+    if (result == pdPASS) {
+      // Serial.println("Task created successfully");
     } else {
-        Serial.println("------ Task is already running. Adding task to queue...");
-        petTaskQueue.push("New Task");  // **将任务加入队列**
+      // Serial.println("Task creation failed!");
+      petTalkTaskHandle = NULL;
     }
+  } else {
+    Serial.println("------ Task is already running. Adding task to queue...");
+    petTaskQueue.push("New Task");  // **将任务加入队列**
+  }
 }
 
 // Check if there is a new audio file in Discord Channel (No retry mechanism due to short polling interval)
@@ -739,7 +780,7 @@ void checkAndDownloadAudio() {
     // **如果是首次运行，仅更新 `lastTimestamp`，不下载音频**
     if (firstRun) {
       lastTimestamp = newTimestamp;  // **仅更新时间戳**
-      firstRun = false;  // **标志位设为 false，后续检测正常运行**
+      firstRun = false;              // **标志位设为 false，后续检测正常运行**
       return;
     }
 
@@ -831,11 +872,32 @@ void playAudio(const char *filename) {
 
   Serial.printf("Reading file: %s (Size: %d bytes)\n", filename, file.size());
 
-  uint8_t buffer[1024];
+  // uint8_t buffer[1024];
+  // while (file.available()) {
+  //   // size_t bytesRead = file.read(buffer, sizeof(buffer));
+  //   // size_t bytesWritten;
+  //   // i2s_write(I2S_NUM_1, buffer, bytesRead, &bytesWritten, portMAX_DELAY);
+  //   uint8_t sample = file.read();  // Read byte from audio file
+  //   dacWrite(I2S_BCLK, sample);          // Output to GPIO25 (DAC1)
+  //   delayMicroseconds(125);       // ~8kHz sample rate
+  // }
+
+  // file.close();
+  file.seek(44);  // 跳过 WAV 头
+
+  const uint32_t sampleRate = 8000;
+  const uint32_t delayTime = 1000000 / sampleRate;  // 微秒级采样周期
+
+  uint8_t sample;
+  uint32_t lastMicros = micros();
+
   while (file.available()) {
-    size_t bytesRead = file.read(buffer, sizeof(buffer));
-    size_t bytesWritten;
-    i2s_write(I2S_NUM_1, buffer, bytesRead, &bytesWritten, portMAX_DELAY);
+    sample = file.read();
+    dacWrite(25, sample);
+
+    // 更精确控制播放速率
+    while (micros() - lastMicros < delayTime);
+    lastMicros += delayTime;
   }
 
   file.close();
@@ -847,16 +909,16 @@ void playAudio(const char *filename) {
 void sendToDiscord(String message) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(webhook_url);
+    http.begin(proxyHost + "/send_text_message");
     http.addHeader("Content-Type", "application/json");
 
-    String payload = "{\"content\": \"" + message + "\"}";
+    String payload = "{\"message\": \"" + message + "\"}";
     int httpResponseCode = http.POST(payload);
 
     if (httpResponseCode > 0) {
-      Serial.printf("--- Message sent to Discord: %s\n", message);
-    } else {
-      Serial.print("Error sending message: ");
+      Serial.printf("--- Message sent to Discord via server: %s\n", message.c_str());
+    } else {  // TODO: retry
+      Serial.print("Error sending message via server: ");
       Serial.println(httpResponseCode);
     }
 
@@ -883,12 +945,16 @@ void printForceInfo(int sensorValue, float voltage, float weightKg) {
 void forceDetectAndSendMessage() {
   int sensorValue = analogRead(PRESSURE_PIN);
   float voltage = sensorValue * (3.3 / 4095.0);
-  float weightKg = voltage * (20.0 / 3.3);
+
+  // 将电压映射成重量（反向）
+  float weightKg = (3.3 - voltage) * (20.0 / 3.3);
+  if (weightKg < 0) weightKg = 0;
+
   unsigned long currentTime = millis();
 
   // 1. 检测宠物到达
   if (weightKg > 3 && !isHere) {  // 宠物来了，但之前 isHere = false
-    if (isHereStartTime == 0) {  // **只在第一次进入时记录时间**
+    if (isHereStartTime == 0) {   // **只在第一次进入时记录时间**
       isHereStartTime = currentTime;
     }
 
@@ -897,17 +963,17 @@ void forceDetectAndSendMessage() {
       sendToDiscord("I am here!");
       dailyVisitCount++;
       isHere = true;
-      isHereDurationStart = currentTime; // **记录宠物开始停留的时间**
-      startPetTalkTask();  // 开始录音并发送语音消息
+      isHereDurationStart = currentTime;  // **记录宠物开始停留的时间**
+      startPetTalkTask();                 // 开始录音并发送语音消息
 
       isHereStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg <= 3) {  
+  } else if (weightKg <= 3) {
     isHereStartTime = 0;  // **如果宠物没有继续停留，则重置计时**
   }
 
   // 2. 检测宠物离开
-  if (weightKg == 0 && isHere) {  // 宠物离开，但之前 isHere = true
+  if (weightKg < 0.1 && isHere) {   // 宠物离开，但之前 isHere = true
     if (isLeavingStartTime == 0) {  // **只在第一次检测到离开时记录时间**
       isLeavingStartTime = currentTime;
     }
@@ -916,13 +982,13 @@ void forceDetectAndSendMessage() {
       printForceInfo(sensorValue, voltage, weightKg);
       isHere = false;
       sendToDiscord("I am leaving to do other things.");
-      dailyStayDuration += (currentTime - isHereDurationStart); // 累计停留时间
-      isHereDurationStart = 0; // **重置停留时间**
-      startPetTalkTask();  // 录音并发送语音消息
+      dailyStayDuration += (currentTime - isHereDurationStart);  // 累计停留时间
+      isHereDurationStart = 0;                                   // **重置停留时间**
+      startPetTalkTask();                                        // 录音并发送语音消息
 
       isLeavingStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg > 0) {  
+  } else if (weightKg > 0) {
     isLeavingStartTime = 0;  // **如果宠物又回来了，重置离开计时**
   }
 
@@ -930,7 +996,7 @@ void forceDetectAndSendMessage() {
   if (weightKg > 3 && isHere) {
     if (isHereDurationStart > 0 && (currentTime - isHereDurationStart >= PET_STAY_DURATION)) {
       sendToDiscord("I enjoy lying here.");  // **发送 "I enjoy lying here."**
-      isHereDurationStart = 0; // **防止重复触发**
+      isHereDurationStart = 0;               // **防止重复触发**
     }
   }
 }
@@ -950,7 +1016,7 @@ void sendDailyReport() {
     report += "- I visited my nest " + String(dailyVisitCount) + " times today.\\n";
     report += "- I stayed in my nest for " + String(dailyStayDuration / 60000) + " minutes.\\n";
     report += "- I talked to you " + String(dailyTalkCount) + " times today.\\n";
-    report += "I enjoy a lot. "
+    report += "I enjoy a lot. ";
 
     sendToDiscord(report);
     dailyReportSent = true;
