@@ -44,7 +44,8 @@ const char *channel_id = "1338951554039812206";
 const char *webhook_url = "https://discord.com/api/webhooks/1338951722256568372/sHs3NwRxrbF_10eaTslUG2uV9DcErBcMAIwWj_EEajd-JOLixKxQ1KxJCLCjY0tUmePh";  // Discord Webhook URL
 
 // Pressure sensor settings
-#define PRESSURE_PIN 34  // force sensor interface
+#define PRESSURE_PIN_1 34  // force sensor interface
+#define PRESSURE_PIN_2 32
 bool isHere = false;
 unsigned long isHereStartTime = 0;               // 记录检测到 weightKg > 3 && !isHere 的时间
 unsigned long isLeavingStartTime = 0;            // 记录宠物离开的时间
@@ -929,8 +930,10 @@ void sendToDiscord(String message) {
 }
 
 
-void printForceInfo(int sensorValue, float voltage, float weightKg) {
-  Serial.print("Pressure Sensor Value: ");
+void printForceInfo(int sensorValue, float voltage, float weightKg, int sensorNum) {
+  Serial.print("Sensor ");
+  Serial.print(sensorNum);
+  Serial.print(" -> Value: ");
   Serial.print(sensorValue);
   Serial.print(" | Voltage: ");
   Serial.print(voltage, 2);
@@ -943,24 +946,31 @@ void printForceInfo(int sensorValue, float voltage, float weightKg) {
 // Force detection
 // If the pet leave shortly after come here, messages will be immediately sent without waiting for the recording to be completed
 void forceDetectAndSendMessage() {
-  int sensorValue = analogRead(PRESSURE_PIN);
-  float voltage = sensorValue * (3.3 / 4095.0);
+  // 第一个传感器
+  int sensorValue1 = analogRead(PRESSURE_PIN_1);
+  float voltage1 = sensorValue1 * (3.3 / 4095.0);
+  float weightKg1 = (3.3 - voltage1) * (20.0 / 3.3);
+  if (weightKg1 < 0) weightKg1 = 0;
 
-  // 将电压映射成重量（反向）
-  float weightKg = (3.3 - voltage) * (20.0 / 3.3);
-  if (weightKg < 0) weightKg = 0;
+  // 第二个传感器
+  int sensorValue2 = analogRead(PRESSURE_PIN_2);
+  float voltage2 = sensorValue2 * (3.3 / 4095.0);
+  float weightKg2 = (3.3 - voltage2) * (20.0 / 3.3);
+  if (weightKg2 < 0) weightKg2 = 0;
 
   unsigned long currentTime = millis();
+  // printForceInfo(sensorValue1, voltage1, weightKg1, 1);
+  // printForceInfo(sensorValue2, voltage2, weightKg2, 2);
 
   // 1. 检测宠物到达
-  if (weightKg > 3 && !isHere) {  // 宠物来了，但之前 isHere = false
+  if ((weightKg1 > 3 || weightKg2 > 3) && !isHere) {  // 宠物来了，但之前 isHere = false
     if (isHereStartTime == 0) {   // **只在第一次进入时记录时间**
       isHereStartTime = currentTime;
     }
 
     if (currentTime - isHereStartTime >= 2000) {  // **宠物持续 2 秒以上**
-      printForceInfo(sensorValue, voltage, weightKg);
-      sendToDiscord("I am here!");
+      printForceInfo(sensorValue1, voltage1, weightKg1, 1);
+      printForceInfo(sensorValue2, voltage2, weightKg2, 2);
       dailyVisitCount++;
       isHere = true;
       isHereDurationStart = currentTime;  // **记录宠物开始停留的时间**
@@ -968,18 +978,19 @@ void forceDetectAndSendMessage() {
 
       isHereStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg <= 3) {
+  } else if (weightKg1 <= 3 && weightKg2 <= 3) {
     isHereStartTime = 0;  // **如果宠物没有继续停留，则重置计时**
   }
 
   // 2. 检测宠物离开
-  if (weightKg < 0.1 && isHere) {   // 宠物离开，但之前 isHere = true
+  if ((weightKg1 < 0.1 && weightKg2 < 0.1) && isHere) {   // 宠物离开，但之前 isHere = true
     if (isLeavingStartTime == 0) {  // **只在第一次检测到离开时记录时间**
       isLeavingStartTime = currentTime;
     }
 
     if (currentTime - isLeavingStartTime >= 2000) {  // **宠物真正离开 2 秒**
-      printForceInfo(sensorValue, voltage, weightKg);
+      printForceInfo(sensorValue1, voltage1, weightKg1, 1);
+      printForceInfo(sensorValue2, voltage2, weightKg2, 2);
       isHere = false;
       sendToDiscord("I am leaving to do other things.");
       dailyStayDuration += (currentTime - isHereDurationStart);  // 累计停留时间
@@ -988,12 +999,12 @@ void forceDetectAndSendMessage() {
 
       isLeavingStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg > 0) {
+  } else if (weightKg1 > 0 || weightKg2 > 0) {
     isLeavingStartTime = 0;  // **如果宠物又回来了，重置离开计时**
   }
 
   // 3. **宠物持续在此处超过 3 分钟**
-  if (weightKg > 3 && isHere) {
+  if ((weightKg1 > 3 || weightKg2 > 3) && isHere) {
     if (isHereDurationStart > 0 && (currentTime - isHereDurationStart >= PET_STAY_DURATION)) {
       sendToDiscord("I enjoy lying here.");  // **发送 "I enjoy lying here."**
       isHereDurationStart = 0;               // **防止重复触发**
