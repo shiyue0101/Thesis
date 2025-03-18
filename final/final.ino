@@ -2,11 +2,11 @@
 #include "WiFi.h"
 #include "HTTPClient.h"
 #include "ESPAsyncWebServer.h"
-#include "SPIFFS.h"
 #include "driver/i2s.h"
 #include "ArduinoJson.h"
 #include <queue>
 #include <string>
+#include "LittleFS.h"
 
 struct UploadResponse {
   String upload_url;
@@ -40,17 +40,17 @@ String serverAudioURL = "http://" + serverHost + portRead + "/audio/latest.wav";
 
 // Discord tokens
 const char *bot_token = "MTMzOTA1MTcxNzc1MjI2MjczNw.G9wDl1.LwnSu5dX482dgyZvNJqifL7mEsCINdIHUdoh3I";
-const char *channel_id = "1338951554039812206";
-const char *webhook_url = "https://discord.com/api/webhooks/1338951722256568372/sHs3NwRxrbF_10eaTslUG2uV9DcErBcMAIwWj_EEajd-JOLixKxQ1KxJCLCjY0tUmePh";  // Discord Webhook URL
+const char *channel_id = "1351547706627325972";
 
 // Pressure sensor settings
 #define PRESSURE_PIN_1 34  // force sensor interface
 #define PRESSURE_PIN_2 32
+#define PRESSURE_PIN_3 33
 bool isHere = false;
-unsigned long isHereStartTime = 0;               // 记录检测到 weightKg > 3 && !isHere 的时间
-unsigned long isLeavingStartTime = 0;            // 记录宠物离开的时间
-unsigned long isHereDurationStart = 0;           // 记录宠物在这里停留的开始时间
-const unsigned long PET_STAY_DURATION = 180000;  // 3 分钟 (180000 毫秒)，TODO: Test
+unsigned long isHereStartTime = 0;             // 记录检测到 weightKg > 3 && !isHere 的时间
+unsigned long isLeavingStartTime = 0;          // 记录宠物离开的时间
+unsigned long isHereDurationStart = 0;         // 记录宠物在这里停留的开始时间
+const unsigned long PET_STAY_DURATION = 3000;  // 5 分钟 (180000 毫秒)，TODO: Test
 
 // INMP441 microphone settings
 #define SAMPLE_RATE 16000
@@ -83,6 +83,8 @@ bool firstRun = true;             // 标志位，ESP32 启动后第一次检测
 #define MAX_RETRY_GET_URL 5
 #define MAX_RETRY_UPLOAD_FILE 5
 #define MAX_RETRY_SEND 5
+#define MAX_RETRY_SEND_TEXT 5
+#define MAX_RETRY_AUDIO_DISCORD 5
 
 // Queue
 std::queue<String> petTaskQueue;        // 存储待执行的任务
@@ -93,13 +95,16 @@ int dailyVisitCount = 0;                // 记录 "I am here!" 的次数
 unsigned long dailyStayDuration = 0;    // 记录 isHere == true 且 weightKg > 3 的总时长（毫秒）
 int dailyTalkCount = 0;                 // 记录语音交互次数
 unsigned long lastDailyReportTime = 0;  // 记录上次发送每日总结的时间
-#define DAILY_REPORT_HOUR 0             // 设定每天几点发送总结（24小时制）
+#define DAILY_REPORT_HOUR 24            // 设定每天几点发送总结（24小时制）
 #define DAILY_REPORT_MINUTE 0           // 设定每天几分发送总结
 bool dailyReportSent = false;           // 标记当天是否已发送每日总结
 // time
 const char *ntpServer = "pool.ntp.org";  // NTP 时间服务器
 const long gmtOffset_sec = 3600;         // 你的时区（欧洲哥本哈根 GMT+1）
 const int daylightOffset_sec = 3600;     // 夏令时调整（如果有）
+
+unsigned long lastPetStayTalkTime = 0;  // 猫窝持续停留的专用语音定时器
+#define PET_TALK_INTERVAL 600000
 
 AsyncWebServer server(80);
 
@@ -141,6 +146,7 @@ void setupI2S_RX() {
 
   Serial.println("I2S (INMP441) initialization complete");
 }
+
 
 // Initialize I2S (MAX98357A)
 // Configure I2S_NUM_1 for sending audio (MAX98357A)
@@ -205,32 +211,14 @@ void ensureWiFiConnected() {
 }
 
 
-// List all files in SPIFFS
-// void listSPIFFSFiles() {
-//   Serial.println("=== List of files in SPIFFS ===");
+void listLittleFSFiles() {
+  Serial.println("=== List of files in LittleFS ===");
 
-//   File root = SPIFFS.open("/");
-//   File file = root.openNextFile();
-
-//   if (!file) {
-//     Serial.println("SPIFFS is empty or inaccessible!");
-//     return;
-//   }
-
-//   while (file) {
-//     Serial.printf("File: %s, Size: %d bytes\n", file.name(), file.size());
-//     file = root.openNextFile();
-//   }
-//   Serial.println("===============================");
-// }
-void listSPIFFSFiles() {
-  Serial.println("=== List of files in SPIFFS ===");
-
-  File root = SPIFFS.open("/");
+  File root = LittleFS.open("/");
   File file = root.openNextFile();
 
   if (!file) {
-    Serial.println("SPIFFS is empty or inaccessible!");
+    Serial.println("LittleFS is empty or inaccessible!");
     return;
   }
 
@@ -362,7 +350,7 @@ void recordAudio() {
 // }
 
 
-// Upload the recorded audio (pcm) to the server, get converted audio (ogg), and save it to SPIFFS
+// Upload the recorded audio (pcm) to the server, get converted audio (ogg), and save it to LittleFS
 bool uploadAudio() {
   WiFiClient client;
   client.setTimeout(10000);
@@ -382,8 +370,8 @@ bool uploadAudio() {
     if (httpResponseCode == 200) {
       Serial.println("Received OGG file from Flask!");
 
-      // create SPIFFS file
-      File file = SPIFFS.open("/audio.ogg", FILE_WRITE);
+      // create LittleFS file
+      File file = LittleFS.open("/audio.ogg", FILE_WRITE);
       if (!file) {
         Serial.println("Failed to open /audio.ogg for writing!");
         return false;
@@ -407,7 +395,7 @@ bool uploadAudio() {
       client.stop();
 
       // check the final ogg file size
-      file = SPIFFS.open("/audio.ogg", FILE_READ);
+      file = LittleFS.open("/audio.ogg", FILE_READ);
       if (!file) {
         Serial.println("Error: Failed to read /audio.ogg!");
         return false;
@@ -534,7 +522,7 @@ bool uploadAudioToDiscord(String uploadUrl) {
 
     ensureWiFiConnected();
 
-    File file = SPIFFS.open("/audio.ogg", FILE_READ);
+    File file = LittleFS.open("/audio.ogg", FILE_READ);
     if (!file) {
       Serial.println("Failed to open file for reading.");
       return false;
@@ -671,20 +659,38 @@ void sendVoiceMessage(String uploadedFilename) {
 // Process of sending voice message to Discord
 void sendAudioToDiscord() {
   Serial.println("Starting voice message process...");
-  UploadResponse uploadInfo = getDiscordUploadURL();  // 1st step: get upload URL
 
-  String uploadUrl = uploadInfo.upload_url;
-  String uploadFilename = uploadInfo.upload_filename;
+  int attempt = 0;
+  bool success = false;
 
-  if (!uploadUrl.isEmpty()) {
-    if (uploadAudioToDiscord(uploadUrl)) {  // 2nd step: upload ogg file to discord server
-      sendVoiceMessage(uploadFilename);     // 3rd step: send voice message to discord channel
-      dailyTalkCount++;
+  while (attempt < MAX_RETRY_AUDIO_DISCORD) {
+    UploadResponse uploadInfo = getDiscordUploadURL();  // Step 1: 获取上传URL
+
+    String uploadUrl = uploadInfo.upload_url;
+    String uploadFilename = uploadInfo.upload_filename;
+
+    if (!uploadUrl.isEmpty()) {
+      if (uploadAudioToDiscord(uploadUrl)) {  // Step 2: 上传音频文件
+        sendVoiceMessage(uploadFilename);     // Step 3: 在频道中发送语音消息
+        dailyTalkCount++;
+        success = true;
+        break;  // 成功后退出循环
+      } else {
+        Serial.printf("Attempt %d: Failed to upload OGG file.\n", attempt + 1);
+      }
     } else {
-      Serial.println("Fail to upload OGG file!");
+      Serial.printf("Attempt %d: Failed to get upload URL.\n", attempt + 1);
     }
-  } else {
-    Serial.println("Fail to get upload URL!");
+
+    attempt++;
+    if (attempt < MAX_RETRY_AUDIO_DISCORD) {
+      Serial.println("Retrying voice message process...");
+      delay(1000);
+    }
+  }
+
+  if (!success) {
+    Serial.println("Failed to send voice message to Discord after all retries.");
   }
 }
 
@@ -697,7 +703,7 @@ void petTalkToOwner() {
 
   // Upload recorded audio
   ensureWiFiConnected();
-  if (uploadAudio()) {  // upload pcm file to server, get converted ogg file and save it to SPIFFS
+  if (uploadAudio()) {  // upload pcm file to server, get converted ogg file and save it to LittleFS
     Serial.println("Uploading to Discord...");
     sendAudioToDiscord();  // upload the voice message to Discord according to APIs
   } else {
@@ -786,22 +792,23 @@ void checkAndDownloadAudio() {
     }
 
     if (newTimestamp > lastTimestamp) {  // Check if this is new audio
-      listSPIFFSFiles();
+      listLittleFSFiles();
       Serial.println("--- New audio detected, starting download...");
       lastTimestamp = newTimestamp;  // Update play record
       downloadAndPlayAudio();
       dailyTalkCount++;
 
-      delay(10000);        // TODO: test the internet
+      delay(10000);
       startPetTalkTask();  // start recording and send voice message to owner
     } else {
       // Serial.println("No new audio, skipping playback");
     }
   } else {
-    Serial.printf("Failed to get timestamp: HTTP %d\n", httpResponseCode);
-    WiFi.disconnect(true);
-    WiFi.begin(ssid, password);
-    Serial.println("Wifi reconnected!");
+    Serial.printf("Failed to get timestamp: HTTP %d\n", httpResponseCode);  // TODO: test
+    ensureWiFiConnected();
+    // WiFi.disconnect(true);
+    // WiFi.begin(ssid, password);
+    // Serial.println("Wifi reconnected!");
   }
   http.end();
 }
@@ -821,15 +828,16 @@ void downloadAndPlayAudio() {
     httpResponseCode = http.GET();
 
     if (httpResponseCode == 200) {
-      File file = SPIFFS.open("/latest_audio.wav", FILE_WRITE);
+      File file = LittleFS.open("/latest_audio.wav", FILE_WRITE);
       if (!file) {
         Serial.println("Unable to create audio file");
+        http.end();
         return;
       }
 
       int totalSize = http.getSize();
       WiFiClient *stream = http.getStreamPtr();
-      uint8_t buffer[1024];
+      uint8_t buffer[2048];
 
       while (http.connected() && totalSize > 0) {
         size_t readBytes = stream->readBytes(buffer, sizeof(buffer));
@@ -838,7 +846,7 @@ void downloadAndPlayAudio() {
       }
       file.close();
 
-      // listSPIFFSFiles();
+      // listLittleFSFiles();
       Serial.println("Audio download complete, starting playback...");
       playAudio("/latest_audio.wav");
 
@@ -856,77 +864,104 @@ void downloadAndPlayAudio() {
 }
 
 
-// Play the recently downloaded file from SPIFFS
+// Play the recently downloaded file from LittleFS
 void playAudio(const char *filename) {
   Serial.printf("Attempting to play file: %s\n", filename);
 
-  if (!SPIFFS.exists(filename)) {
+  if (!LittleFS.exists(filename)) {
     Serial.println("Audio file does not exist");
     return;
   }
 
-  File file = SPIFFS.open(filename);
+  File file = LittleFS.open(filename);
   if (!file) {
     Serial.println("Unable to open audio file");
     return;
   }
 
-  Serial.printf("Reading file: %s (Size: %d bytes)\n", filename, file.size());
+  size_t fileSize = file.size();
+  Serial.printf("Reading file: %s (Size: %d bytes)\n", filename, fileSize);
 
-  // uint8_t buffer[1024];
-  // while (file.available()) {
-  //   // size_t bytesRead = file.read(buffer, sizeof(buffer));
-  //   // size_t bytesWritten;
-  //   // i2s_write(I2S_NUM_1, buffer, bytesRead, &bytesWritten, portMAX_DELAY);
-  //   uint8_t sample = file.read();  // Read byte from audio file
-  //   dacWrite(I2S_BCLK, sample);          // Output to GPIO25 (DAC1)
-  //   delayMicroseconds(125);       // ~8kHz sample rate
-  // }
+  if (fileSize <= 44) {
+    Serial.println("File too small.");
+    file.close();
+    return;
+  }
+  file.seek(44);
 
-  // file.close();
-  file.seek(44);  // 跳过 WAV 头
-
-  const uint32_t sampleRate = 8000;
-  const uint32_t delayTime = 1000000 / sampleRate;  // 微秒级采样周期
-
-  uint8_t sample;
-  uint32_t lastMicros = micros();
-
+  uint8_t buffer[1024];
+  unsigned long startPlayTime = millis();
   while (file.available()) {
-    sample = file.read();
-    dacWrite(25, sample);
-
-    // 更精确控制播放速率
-    while (micros() - lastMicros < delayTime);
-    lastMicros += delayTime;
+    size_t bytesRead = file.read(buffer, sizeof(buffer));
+    size_t bytesWritten;
+    i2s_write(I2S_NUM_1, buffer, bytesRead, &bytesWritten, portMAX_DELAY);
+    // uint8_t sample = file.read();  // Read byte from audio file
+    // dacWrite(I2S_BCLK, sample);          // Output to GPIO25 (DAC1)
+    // delayMicroseconds(125);       // ~8kHz sample rate
   }
 
   file.close();
+
+  int bitsPerSample = 16;
+  int numChannels = 2;
+  int sampleRate = 44100;
+  // 实际音频数据大小（去掉44字节WAV头）
+  size_t audioDataSize = fileSize - 44;
+  // 总样本数 = 数据字节数 / 每个样本的总字节数
+  float durationSeconds = (float)audioDataSize / (sampleRate * numChannels * (bitsPerSample / 8));
+  Serial.printf("Estimated audio duration: %.2f seconds\n", durationSeconds);
+  unsigned long playDuration = millis() - startPlayTime;
+  unsigned long expectedDuration = (unsigned long)(durationSeconds * 1000);
+  if (playDuration < expectedDuration) {
+    unsigned long remainingDelay = expectedDuration - playDuration;
+    // Serial.printf("Delaying %.0f ms to complete output\n", (float)remainingDelay);
+    delay(remainingDelay);  // 等待输出完成
+  }
+
+  // 清除 DMA 缓冲+播放静音
+  i2s_zero_dma_buffer(I2S_NUM_1);
+  int16_t silence = 0;
+  for (int i = 0; i < 2000; i++) {
+    size_t bytesWritten;
+    i2s_write(I2S_NUM_1, &silence, sizeof(silence), &bytesWritten, portMAX_DELAY);
+  }
+
   Serial.println("Playback complete");
 }
 
 
 // Send text messages to Discord
 void sendToDiscord(String message) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(proxyHost + "/send_text_message");
-    http.addHeader("Content-Type", "application/json");
+  int attempt = 0;
+  int httpResponseCode = -1;
 
-    String payload = "{\"message\": \"" + message + "\"}";
-    int httpResponseCode = http.POST(payload);
+  while (attempt < MAX_RETRY_SEND_TEXT) {
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(proxyHost + "/send_text_message");
+      http.addHeader("Content-Type", "application/json");
 
-    if (httpResponseCode > 0) {
-      Serial.printf("--- Message sent to Discord via server: %s\n", message.c_str());
-    } else {  // TODO: retry
-      Serial.print("Error sending message via server: ");
-      Serial.println(httpResponseCode);
+      String payload = "{\"message\": \"" + message + "\"}";
+      httpResponseCode = http.POST(payload);
+
+      if (httpResponseCode > 0) {
+        Serial.printf("--- Message sent to Discord via server (Attempt %d): %s\n", attempt + 1, message.c_str());
+        http.end();
+        return;  // 成功后直接返回
+      } else {
+        Serial.printf("Error sending message (Attempt %d): HTTP %d\n", attempt + 1, httpResponseCode);
+      }
+
+      http.end();
+    } else {
+      ensureWiFiConnected();
     }
 
-    http.end();
-  } else {
-    Serial.println("WiFi not connected!");
+    attempt++;
+    delay(1000);  // 重试间隔
   }
+
+  Serial.println("Failed to send message to Discord after retries.");
 }
 
 
@@ -940,6 +975,30 @@ void printForceInfo(int sensorValue, float voltage, float weightKg, int sensorNu
   Serial.print("V | Weight: ");
   Serial.print(weightKg, 2);
   Serial.println(" kg");
+}
+
+
+String getRandomLineFromFile(const char *filename, int totalLines) {
+  if (!LittleFS.exists(filename)) {
+    return "Meow~ I cannot find my voice.";
+  }
+
+  File file = LittleFS.open(filename, FILE_READ);
+  if (!file) {
+    return "Meow~ File error.";
+  }
+
+  // 随机选择一行
+  int targetLine = random(0, totalLines);  // 行号从 0 开始
+
+  String line;
+  for (int i = 0; i <= targetLine; ++i) {
+    line = file.readStringUntil('\n');
+  }
+
+  file.close();
+  line.trim();
+  return line;
 }
 
 
@@ -958,33 +1017,48 @@ void forceDetectAndSendMessage() {
   float weightKg2 = (3.3 - voltage2) * (20.0 / 3.3);
   if (weightKg2 < 0) weightKg2 = 0;
 
+  // 第三个传感器
+  int sensorValue3 = analogRead(PRESSURE_PIN_3);
+  float voltage3 = sensorValue3 * (3.3 / 4095.0);
+  float weightKg3 = (3.3 - voltage3) * (20.0 / 3.3);
+  if (weightKg3 < 0) weightKg3 = 0;
+
   unsigned long currentTime = millis();
+  String msg = "Failed!";
   // printForceInfo(sensorValue1, voltage1, weightKg1, 1);
   // printForceInfo(sensorValue2, voltage2, weightKg2, 2);
+  // printForceInfo(sensorValue3, voltage3, weightKg3, 3);
 
   // 1. 检测宠物到达
-  if ((weightKg1 > 3 || weightKg2 > 3) && !isHere) {  // 宠物来了，但之前 isHere = false
-    if (isHereStartTime == 0) {   // **只在第一次进入时记录时间**
+  if ((weightKg1 > 3 || weightKg2 > 3 || weightKg3 > 3) && !isHere) {  // 宠物来了，但之前 isHere = false
+    if (isHereStartTime == 0) {                                        // **只在第一次进入时记录时间**
       isHereStartTime = currentTime;
     }
 
     if (currentTime - isHereStartTime >= 2000) {  // **宠物持续 2 秒以上**
       printForceInfo(sensorValue1, voltage1, weightKg1, 1);
       printForceInfo(sensorValue2, voltage2, weightKg2, 2);
+      printForceInfo(sensorValue3, voltage3, weightKg3, 3);
+
+      // 假设您已统计过这个文件总共有 1000 行
+      msg = getRandomLineFromFile("/cat_entry_messages.txt", 1000);
+      sendToDiscord(msg);
+
       dailyVisitCount++;
       isHere = true;
       isHereDurationStart = currentTime;  // **记录宠物开始停留的时间**
-      startPetTalkTask();                 // 开始录音并发送语音消息
+      lastPetStayTalkTime = currentTime;
+      startPetTalkTask();  // 开始录音并发送语音消息
 
       isHereStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg1 <= 3 && weightKg2 <= 3) {
+  } else if (weightKg1 <= 3 && weightKg2 <= 3 && weightKg3 <= 3) {
     isHereStartTime = 0;  // **如果宠物没有继续停留，则重置计时**
   }
 
   // 2. 检测宠物离开
-  if ((weightKg1 < 0.1 && weightKg2 < 0.1) && isHere) {   // 宠物离开，但之前 isHere = true
-    if (isLeavingStartTime == 0) {  // **只在第一次检测到离开时记录时间**
+  if ((weightKg1 < 0.1 && weightKg2 < 0.1 && weightKg3 < 0.1) && isHere) {  // 宠物离开，但之前 isHere = true
+    if (isLeavingStartTime == 0) {                                          // **只在第一次检测到离开时记录时间**
       isLeavingStartTime = currentTime;
     }
 
@@ -992,22 +1066,34 @@ void forceDetectAndSendMessage() {
       printForceInfo(sensorValue1, voltage1, weightKg1, 1);
       printForceInfo(sensorValue2, voltage2, weightKg2, 2);
       isHere = false;
-      sendToDiscord("I am leaving to do other things.");
+      msg = getRandomLineFromFile("/cat_exit_messages.txt", 1000);
+      sendToDiscord(msg);
       dailyStayDuration += (currentTime - isHereDurationStart);  // 累计停留时间
       isHereDurationStart = 0;                                   // **重置停留时间**
       startPetTalkTask();                                        // 录音并发送语音消息
 
       isLeavingStartTime = 0;  // **状态改变后重置计时**
     }
-  } else if (weightKg1 > 0 || weightKg2 > 0) {
+  } else if (weightKg1 > 0 || weightKg2 > 0 || weightKg3 > 0) {
     isLeavingStartTime = 0;  // **如果宠物又回来了，重置离开计时**
   }
 
-  // 3. **宠物持续在此处超过 3 分钟**
-  if ((weightKg1 > 3 || weightKg2 > 3) && isHere) {
+  // 3. **宠物持续在此处超过 5 分钟**
+  if ((weightKg1 > 3 || weightKg2 > 3 || weightKg3 > 3) && isHere) {
     if (isHereDurationStart > 0 && (currentTime - isHereDurationStart >= PET_STAY_DURATION)) {
-      sendToDiscord("I enjoy lying here.");  // **发送 "I enjoy lying here."**
-      isHereDurationStart = 0;               // **防止重复触发**
+      String cozyMessage = getRandomLineFromFile("/cat_stay_messages.txt", 1000);
+      cozyMessage += "\\n";
+      cozyMessage += "```";
+      cozyMessage += "    |\\\\      _,,,---,,_\\n";
+      cozyMessage += "ZZZ /,.-''    -.  ;-;;,_\\n";
+      cozyMessage += "   |,4-  ) )-,_. ,\\\\ (  '-'\\n";
+      cozyMessage += "  '---''(_/--'  -'_)";
+      cozyMessage += "```";
+      sendToDiscord(cozyMessage);
+
+      // sendToDiscord("I enjoy lying here.");  // **发送 "I enjoy lying here."**
+      isHereDurationStart = 0;  // **防止重复触发**
+      lastPetStayTalkTime = 0;
     }
   }
 }
@@ -1023,7 +1109,7 @@ void sendDailyReport() {
 
   // 判断是否到达发送时间，并且当天还未发送
   if (((timeinfo.tm_hour = DAILY_REPORT_HOUR && timeinfo.tm_min >= DAILY_REPORT_MINUTE) || timeinfo.tm_hour >= DAILY_REPORT_HOUR) && !dailyReportSent) {
-    String report = "Hi Yue,:\\n";
+    String report = "Hi Yue,\\n";
     report += "- I visited my nest " + String(dailyVisitCount) + " times today.\\n";
     report += "- I stayed in my nest for " + String(dailyStayDuration / 60000) + " minutes.\\n";
     report += "- I talked to you " + String(dailyTalkCount) + " times today.\\n";
@@ -1070,12 +1156,12 @@ void setup() {
   setupI2S_RX();  // INMP411
   setupI2S_TX();  // MAX98357A
 
-  // Initialize SPIFFS (save audio)
-  if (!SPIFFS.begin(true)) {
-    Serial.println("Fail to initialize SPIFFS!");
+  // Initialize LittleFS (save audio)
+  if (!LittleFS.begin(true)) {
+    Serial.println("Fail to initialize LittleFS!");
     return;
   }
-  SPIFFS.begin(true);
+  LittleFS.begin(true);
 
   // **同步 NTP 时间**
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -1115,5 +1201,11 @@ void loop() {
   }
 
   forceDetectAndSendMessage();
+
+  if (isHere && millis() - lastPetStayTalkTime >= PET_TALK_INTERVAL) {
+    startPetTalkTask();
+    lastPetStayTalkTime = millis();
+  }
+
   delay(500);
 }
